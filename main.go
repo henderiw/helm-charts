@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
+	"github.com/GoogleContainerTools/kpt-functions-sdk/go/fn"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"sigs.k8s.io/kustomize/kyaml/kio"
 )
 
 const (
@@ -27,36 +31,7 @@ func main() {
 		panic(err)
 	}
 
-	/*
-		v, err := yaml.Marshal(vals)
-		if err != nil {
-			panic(err)
-		}
-		//fmt.Println(string(v))
-
-		c, err := config.GetConfig()
-		if err != nil {
-			panic(err)
-		}
-		//fmt.Println(c)
-	*/
-
-	/*
-		httpClient, err := rest.HTTPClientFor(c)
-		if err != nil {
-			panic(err)
-		}
-	*/
-
-	/*
-		restmapper, err := apiutil.NewDynamicRESTMapper(c, httpClient)
-		if err != nil {
-			panic(err)
-		}
-	*/
-
-	namespace := "test"
-
+	namespace := ""
 	actionConfig := new(action.Configuration)
 	if err := actionConfig.Init(
 		&genericclioptions.ConfigFlags{
@@ -70,14 +45,40 @@ func main() {
 	}
 
 	client := action.NewInstall(actionConfig)
-	client.ReleaseName = chrt.Metadata.Version
-	client.Namespace = namespace
+	client.Devel = true
 	client.DryRun = true
+	client.ReleaseName = "release-name"
+	client.Replace = true // Skip the name check
+	client.ClientOnly = true
+	client.APIVersions = chartutil.VersionSet([]string{})
+	client.IncludeCRDs = true
 
-	r, err := client.Run(chrt, vals)
+	rel, err := client.Run(chrt, vals)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	fmt.Println(r.Manifest)
+	if rel != nil {
+		r := &kio.ByteReader{Reader: bytes.NewBufferString(string(rel.Manifest)), OmitReaderAnnotations: true}
+		nodes, err := r.Read()
+		if err != nil {
+			panic(err)
+		}
+
+		for i := range nodes {
+			o, err := fn.ParseKubeObject([]byte(nodes[i].MustString()))
+			if err != nil {
+				if strings.Contains(err.Error(), "expected exactly one object, got 0") {
+					// sometimes helm produces some messages in between resources, we can safely
+					// ignore these
+					continue
+				}
+				err = fmt.Errorf("failed to parse %s: %s", nodes[i].MustString(), err.Error())
+				panic(err)
+			}
+			fmt.Println("---- kubeObject start ----")
+			fmt.Println(o.String())
+			fmt.Println("---- kubeObject end   ----")
+		}
+	}
 }
